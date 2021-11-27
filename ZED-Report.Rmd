@@ -1,30 +1,102 @@
 ---
-title: "ZED_Report"
+title: "Analiza danych o dobrobycie w różnych krajach świata i ich wizualizacja"
 author: "Grzegorz Otworowski"
-date: "27 11 2021"
-output: html_document
+date: "27.11.2021"
+output: 
+  html_document: 
+    highlight: tango
+    theme: simplex
+    toc: yes
+    #toc_float: yes
+    df_print: kable
+    keep_md: yes
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+```{r libraries, include=FALSE}
+list.of.packages <- c("dplyr", "tidyr", "DT", "readxl")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+library(dplyr)
+library(tidyr)
+library(DT)
+library(readxl)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r repeatability, include=FALSE}
+set.seed(7)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r import, include=FALSE}
+initial <- read.csv(".\\Data pack\\CurrencyExchangeRates.csv", nrows = 1)
+colNum <- ncol(initial)
+classes <- c("Date", x<-rep(c("numeric"), times=colNum))
+CER <- read.csv(".\\Data pack\\CurrencyExchangeRates.csv", colClasses = classes)
+
+initial <- read.csv(".\\Data pack\\Gold prices.csv", nrows = 2)
+classes <- sapply(initial, class)
+Gold <- read.csv(".\\Data pack\\Gold prices.csv", colClasses = classes)
+
+initial <- read.csv(".\\Data pack\\S&P Composite.csv", nrows = 10)
+classes <- sapply(initial, class)
+SP <- read.csv(".\\Data pack\\S&P Composite.csv", colClasses = classes)
+
+
+WDI <- read_xlsx(".\\Data pack\\World_Development_Indicators.xlsx", sheet = "Data", col_names = TRUE, guess_max = 100, na = "..")
+
+classes <- c("Date","numeric")
+
+BDIFF <- read.csv(".\\Data pack\\Bitcoin\\BCHAIN-DIFF.csv", colClasses = classes)
+BHRATE <- read.csv(".\\Data pack\\Bitcoin\\BCHAIN-HRATE.csv", colClasses = classes)
+BMKPRU <- read.csv(".\\Data pack\\Bitcoin\\BCHAIN-MKPRU.csv", colClasses = classes)
+BTRVOU <- read.csv(".\\Data pack\\Bitcoin\\BCHAIN-TRVOU.csv", colClasses = classes)
+```
+
+```{r cleaning}
+BDIFF <- rename(BDIFF, "Bitcoin Difficulty" = Value)
+BHRATE <- rename(BHRATE, "Bitcoin Hash Rate" = Value)
+BMKPRU <- rename(BMKPRU, "Bitcoin Market Price USD" = Value)
+BTRVOU <- rename(BTRVOU, "Bitcoin USD Exchange Trade Volume" = Value)
+
+colNames <- WDI %>% pull(`Series Name`) %>% unique()
+colNames <- colNames[!is.na(colNames)]
+
+WDI <- WDI %>% gather("Year", "Value", 5:ncol(WDI)) %>% select(-"Series Code") %>% filter(!is.na(`Country Name`)) %>% spread("Series Name", Value)
+```
+
+
+```{r}
+head(CER)
+```
+
+```{r}
+head(Gold)
+```
+
+```{r}
+head(SP)
+```
+
+```{r}
+head(WDI)
+```
+
+```{r}
+head(BDIFF)
+```
+
+```{r}
+head(BHRATE)
+```
+
+```{r}
+head(BMKPRU)
+```
+
+```{r}
+head(BTRVOU)
+```

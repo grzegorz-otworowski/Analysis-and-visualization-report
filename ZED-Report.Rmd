@@ -1,30 +1,56 @@
 ---
-title: "Analiza danych o dobrobycie w różnych krajach świata i ich wizualizacja"
+title: "Analiza danych o dobrobycie w Unii Europejskiej i ich wizualizacja oraz próba ich powiązania z cenami złota"
 author: "Grzegorz Otworowski"
-date: "27.11.2021"
+date: "`r format(Sys.time(), '%d.%m.%y')`"
 output: 
   html_document: 
     highlight: tango
     theme: simplex
     toc: yes
-    #toc_float: yes
+    toc_float: yes
     df_print: kable
     keep_md: yes
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
+
 ```
 
-```{r libraries, include=FALSE}
-list.of.packages <- c("dplyr", "tidyr", "DT", "readxl")
-new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
-if(length(new.packages)) install.packages(new.packages)
+## Podsumowanie analizy
 
+Na podstawie przeprowadzonej analizy można stwierdzić, że ceny złota są powiązane z różnymi w wskaźnikami ekonomicznymi w krajach wysoko rozwiniętych (w wypadku tej analizy - krajach Unii Europejskiej w latach 2013-2019). Utworzony model regresji wykazał, że najistotniejszy wpływ na predykcję cen złota miała inflacja.
+
+```{r libraries, include=FALSE}
 library(dplyr)
 library(tidyr)
 library(DT)
 library(readxl)
+library(skimr)
+library(rstatix)
+library(tibble)
+library(ggpubr)
+library(corrplot)
+library(gridExtra)
+library(cowplot)
+library(plotly)
+library(caret)
+library(gbm)
+library(elasticnet)
+library(brnn)
+```
+
+```{r tables, include=FALSE}
+prettyTableShort <- function(table_df, round_digits=2) {
+    DT::datatable(table_df, class = 'cell-border stripe', style="bootstrap", rownames = FALSE, options = list(dom = 't')) %>% formatRound(names(dplyr::select_if(table_df, is.numeric)), round_digits)
+}
+
+prettyTablePoor <- function(table_df, round_digits=2, rownames = FALSE) {
+    DT::datatable(table_df, style = 'bootstrap', class = 'cell-border stripe', rownames = rownames, options = list(
+   dom = 'tp', scrollX = 'TRUE', scrollY = 'TRUE', autoWidth = 'TRUE', columnDefs = list(list(width = '100px', targets = "_all"))
+)) %>% formatRound(names(dplyr::select_if(table_df, is.numeric)), round_digits)
+}
+
 ```
 
 ```{r repeatability, include=FALSE}
@@ -34,69 +60,377 @@ set.seed(7)
 ```{r import, include=FALSE}
 initial <- read.csv(".\\Data pack\\CurrencyExchangeRates.csv", nrows = 1)
 colNum <- ncol(initial)
-classes <- c("Date", x<-rep(c("numeric"), times=colNum))
+classes <- c("Date", x<-rep(c("numeric"), times=colNum-1))
 CER <- read.csv(".\\Data pack\\CurrencyExchangeRates.csv", colClasses = classes)
 
-initial <- read.csv(".\\Data pack\\Gold prices.csv", nrows = 2)
+initial <- read.csv(".\\Data pack\\GOLD prices.csv", nrows = 2)
 classes <- sapply(initial, class)
-Gold <- read.csv(".\\Data pack\\Gold prices.csv", colClasses = classes)
+GOLD <- read.csv(".\\Data pack\\GOLD prices.csv", colClasses = classes)
 
 initial <- read.csv(".\\Data pack\\S&P Composite.csv", nrows = 10)
 classes <- sapply(initial, class)
 SP <- read.csv(".\\Data pack\\S&P Composite.csv", colClasses = classes)
 
-
 WDI <- read_xlsx(".\\Data pack\\World_Development_Indicators.xlsx", sheet = "Data", col_names = TRUE, guess_max = 100, na = "..")
 
 classes <- c("Date","numeric")
-
 BDIFF <- read.csv(".\\Data pack\\Bitcoin\\BCHAIN-DIFF.csv", colClasses = classes)
 BHRATE <- read.csv(".\\Data pack\\Bitcoin\\BCHAIN-HRATE.csv", colClasses = classes)
 BMKPRU <- read.csv(".\\Data pack\\Bitcoin\\BCHAIN-MKPRU.csv", colClasses = classes)
 BTRVOU <- read.csv(".\\Data pack\\Bitcoin\\BCHAIN-TRVOU.csv", colClasses = classes)
 ```
 
-```{r cleaning}
-BDIFF <- rename(BDIFF, "Bitcoin Difficulty" = Value)
-BHRATE <- rename(BHRATE, "Bitcoin Hash Rate" = Value)
-BMKPRU <- rename(BMKPRU, "Bitcoin Market Price USD" = Value)
-BTRVOU <- rename(BTRVOU, "Bitcoin USD Exchange Trade Volume" = Value)
+```{r cleaning, include=FALSE}
+BDIFF <- rename(BDIFF, "BIT Difficulty" = Value)
+BHRATE <- rename(BHRATE, "BIT Hash Rate" = Value)
+BMKPRU <- rename(BMKPRU, "BIT Market Price USD" = Value)
+BTRVOU <- rename(BTRVOU, "BIT USD Exchange Trade Volume" = Value)
+BIT <- merge(BDIFF, BHRATE, by = "Date") %>% merge(BMKPRU, by = "Date") %>% merge(BTRVOU, by = "Date") %>% mutate(Date = substr(Date,1,4)) %>% group_by(Date) %>% summarise(across(everything(), ~ mean(.x, na.rm = TRUE))) %>% mutate(Date = as.Date(Date, format = "%Y")) %>% mutate(Date = format(Date, "%Y"))
 
 colNames <- WDI %>% pull(`Series Name`) %>% unique()
 colNames <- colNames[!is.na(colNames)]
 
-WDI <- WDI %>% gather("Year", "Value", 5:ncol(WDI)) %>% select(-"Series Code") %>% filter(!is.na(`Country Name`)) %>% spread("Series Name", Value)
+WDI <- WDI %>% gather("Year", "Value", 5:ncol(WDI)) %>% select(-"Series Code") %>% filter(!is.na(`Country Name`)) %>% spread("Series Name", Value) %>% select(-"<NA>") %>% mutate(Year = substr(Year, 1, 4)) %>% mutate(Year = as.Date(Year, format = "%Y")) %>% mutate(Year = format(Year, "%Y")) %>% rename(Date = Year)
+
+GOLD <- GOLD %>% mutate(Date = substr(Date,1,4)) %>% group_by(Date) %>% summarise(across(everything(), ~ mean(.x, na.rm = TRUE))) %>% mutate(Date = as.Date(Date, format = "%Y")) %>% mutate(Date = format(Date, "%Y"))
+
+SP <- SP %>% mutate(Year = substr(Year,1,4)) %>% rename(Date = Year) %>% group_by(Date) %>% summarise(across(everything(), ~ mean(.x, na.rm = TRUE))) %>% mutate(Date = as.Date(Date, format = "%Y")) %>% mutate(Date = format(Date, "%Y"))
+
+CER <- CER %>% mutate(Date = substr(Date,1,4)) %>% group_by(Date) %>% summarise(across(everything(), ~ mean(.x, na.rm = TRUE)))%>% mutate(Date = as.Date(Date, format = "%Y")) %>% mutate(Date = format(Date, "%Y"))
 ```
 
-
-```{r}
-head(CER)
+```{r export_clean, include=FALSE}
+write.csv(CER,".\\Clean data\\CER.csv", row.names = FALSE)
+write.csv(GOLD,".\\Clean data\\GOLD.csv", row.names = FALSE)
+write.csv(SP,".\\Clean data\\SP.csv", row.names = FALSE)
+write.csv(WDI,".\\Clean data\\WDI.csv", row.names = FALSE)
+write.csv(BIT,".\\Clean data\\BIT.csv", row.names = FALSE)
 ```
 
-```{r}
-head(Gold)
+## Podstawowe statystyki
+
+Zbiór danych składa się z 5 tabel:
+
+```{r basics}
+tables <- list(BIT, CER, GOLD, SP, WDI)
+tableNames <- c("Bitcoin","Currency Exchange Rates","Gold prices","S&P Composite","World Development Indicators")
+columnNum <- sapply(tables, ncol)
+rowNum <- sapply(tables, nrow)
+
+basics <- data.frame(tableNames,columnNum,rowNum)
+colnames(basics) <- c("Table","No. of columns (attributes)", "No. of rows (observations)")
+
+attributes <- sum(basics$"No. of columns (attributes)") - length(tables) + 1
+observations <- sum(basics$"No. of rows (observations)")
+
+prettyTableShort(basics)
 ```
 
-```{r}
-head(SP)
+Łącznie w całym zbiorze danych występuje `r observations` obserwacji oraz `r attributes` atrybutów.
+
+## Szczegółowa analiza atrybutów
+
+### Bitcoin
+```{r bitcoin_summary}
+prettyTablePoor(skim(BIT))
+```
+### Currency Exchange Rates
+```{r CRE_summary}
+prettyTablePoor(skim(CER))
+```
+### Gold prices
+```{r gold_summary}
+prettyTablePoor(skim(GOLD))
+```
+### S&P Composite
+```{r s&p_summary}
+prettyTablePoor(skim(SP))
+```
+### World Development Indicators
+```{r wdi_summary}
+prettyTablePoor(skim(WDI))
 ```
 
-```{r}
-head(WDI)
+## Badanie korelacji
+
+Do dalszej analizy zbiór krajów branych pod uwagę zostanie ograniczony do krajów należących do Unii Europejskiej w latach 2013-2019. W tym okresie UE posiadała najwięcej państw członkowskich w swoich dziejach (28). Dodatkową zaletą tak dobranego okresu jest kompletność danych we wszystkich dostępnych tabelach oraz mniej wartości pustych. Wynika to m.in. z tego, że rejestrowanie części wskaźników rozpoczęto stosunkowo niedawno. Aby uniknąć zaburzenia wyników wszystkie atrybuty z tabeli World Development Indicators z kompletnością danych niższą niż 50% nie będę brane pod uwagę w dalszej analizie.
+
+Poniżej zaprezentowano tabelę z uśrednionymi wartościami wzkaźników dla Unii Europejskiej.
+
+```{r date_UE_range}
+CER <- CER  %>% filter(Date>=2013 & Date<=2019)
+GOLD <- GOLD %>% filter(Date>=2013 & Date<=2019) %>% rename("Gold (USD)"="USD..PM.")
+SP <- SP %>% filter(Date>=2013 & Date<=2019) 
+WDI <- WDI %>% filter(Date>=2013 & Date<=2019)
+BIT <- BIT %>% filter(Date>=2013 & Date<=2019)
+
+WDI <- WDI[, which(colMeans(!is.na(WDI)) > 0.5)] %>% rename("Ease of doing business score (0 = lowest, 100 = best)" = "Ease of doing business score (0 = lowest performance to 100 = best performance)")
+
+UE <- c("Austria","Belgium","Bulgaria","Croatia","Cyprus","Czech Republic","Denmark","Estonia","Finland","France","Germany","Greece","Hungary","Ireland","Italy","Latvia","Lithuania","Luxembourg","Malta","Netherlands","Poland","Portugal","Portugal","Romania","Slovakia","Slovenia","Spain","Sweden")
+WDI_UE_ALL <- WDI %>% filter(`Country Name` %in% UE)
+WDI_UE <- WDI_UE_ALL %>% select(-(1:2)) %>% group_by(Date) %>% summarise(across(everything(), ~ mean(.x, na.rm = TRUE)))
+prettyTablePoor(WDI_UE)
 ```
 
-```{r}
-head(BDIFF)
+```{r cor_analysis_sp, warning=FALSE}
+SP <- SP %>% select(1:2)
+WDI_SP <- WDI_UE %>% merge(SP, by = "Date")
+COR_SP <- round(cor(WDI_SP[c(-1,-length(WDI_SP))], WDI_SP[length(WDI_SP)], use = "pairwise.complete.obs"), 2) %>% as.data.frame() %>% drop_na() %>% rownames_to_column("Name")
 ```
 
-```{r}
-head(BHRATE)
+```{r cor_analysis_gold, warning=FALSE}
+GOLD <- GOLD %>% select(Date, "Gold (USD)")
+WDI_GOLD <- WDI_UE %>% merge(GOLD, by ="Date")
+res <- round(cor(WDI_GOLD[c(-1,-length(WDI_GOLD))], WDI_GOLD[length(WDI_GOLD)], use = "pairwise.complete.obs"), 2)
+COR_GOLD <- res %>% as.data.frame() %>% drop_na() %>% rownames_to_column("Name")
 ```
 
-```{r}
-head(BMKPRU)
+```{r cor_analysis_bit, warning=FALSE}
+BIT <- BIT %>% select(Date, "BIT Market Price USD")
+WDI_BIT <- WDI_UE %>% merge(BIT, by ="Date")
+COR_BIT <- round(cor(WDI_BIT[c(-1,-length(WDI_BIT))], WDI_BIT[length(WDI_BIT)], use = "pairwise.complete.obs"), 2) %>% as.data.frame() %>% drop_na() %>% rownames_to_column("Name")
+```
+### Korelacja między wskaźnikami WDI a cenami złota, bitcoina oraz indeksem S&P
+```{r cor_analysis_summary}
+COR <- merge(COR_SP, COR_GOLD, by = "Name") %>% merge(COR_BIT, by = "Name")
+prettyTablePoor(COR)
+```
+Na podstawie analizy uzyskanych wartości korelacji następujące wybrano następujące wskaźniki, które mogą mieć realny związek zarówno z cenami złota, Bitcoina jak i indeksem S&P. Wymienione niżej korelacje stanowią uśrednioną wartość korelacji trzech ww. atrybutów:
+
+- Ease of doing business score (0 = lowest performance to 100 = best performance) - korelacja >0.9 - Związek ze Wskaźnikiem łatwości prowadzenia działalności gospodarczej wydaje się być dość oczywisty. Im prościej jest prowadzić  działalność, tym wyższe zdają się być ceny oraz indeksy giełdowe.
+- Services, value added (% of GDP) - korelacja ~= 0.6 -  wskaźnik mówiący procencie PKB jaki stanowi wartość dodana z sektora usługowego. W krajach wysoko rozwiniętych, jak kraje UE, to usługi mają największy wpływ na PKB, a zatem też na gospodarkę. 
+- GDP per capita (current US$) - korelacja ~= 0.6 - Produkt Krajowy Brutto w przeliczeniu na mieszkańca jest jednym z podstawowych mierników gospodarki. Zrozumiałe więc, że PKB krajów UE ma wpływ na globalne ceny.
+- Goods imports (BoP, current US$) - korelacja ~= 0.6 - import dóbr wskazuje bezpośrednio na wartość transakcji międzynarodowych. Transakcje mają wpływ na ceny.
+- Goods exports (BoP, current US$) - korelacja ~= 0.6 - eksport dóbr wskazuje bezpośrednio na wartość transakcji międzynarodowych. Transakcje mają wpływ na ceny.
+- Inflation, consumer prices (annual %) - korelacja ~= 0.65 - wzrost inflacji również ma istotny wpływ na wzrost cen złota, Bitcoina oraz indeksu S&P.
+- Taxes on goods and services (% of revenue) - korelacja ~= -0.6 - im większy procent przychodu stanowią podatki od dóbr i usług tym mniejsze stają się ceny złota, Bitcoina oraz indeksu S&P.
+
+Korelacje powyższych atrybutów zostaną ukazane na poniższych wykresach.
+
+
+
+### Wizualizacja
+```{r cor_vis, warning=FALSE, message=FALSE, fig.width=14, fig.height=20}
+
+WSGB <- WDI_UE %>% merge(SP, by ="Date") %>% merge(GOLD, by ="Date") %>% merge(BIT, by ="Date") 
+
+attributes <- c("Ease of doing business score (0 = lowest, 100 = best)","Services, value added (% of GDP)","GDP per capita (current US$)","Goods imports (BoP, current US$)","Goods exports (BoP, current US$)","Inflation, consumer prices (annual %)","Taxes on goods and services (% of revenue)")
+factors <- c("S.P.Composite", "Gold (USD)", "BIT Market Price USD")
+
+plots <- list()
+
+for (a in seq_along(attributes)){
+  for (f in seq_along(factors)){
+    plots[[(a-1)*3+f]] =
+      ggscatter(WSGB, x = attributes[a], y = factors[f], 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson")+
+      geom_smooth(method="lm", formula = y ~ x)
+  }
+}
+
+plot_grid(plotlist=plots, ncol = 3)
 ```
 
-```{r}
-head(BTRVOU)
+## Wizualizacja wybranych atrybutów w czasie
+```{r interactive_plot, fig.width=9, warning=FALSE}
+WDI_UE_ALL <- WDI_UE_ALL %>% select(Date, "Country Name", all_of(attributes))
+prettyTablePoor(WDI_UE_ALL)
+
+WDI_UE_ALL %>%
+  plot_ly(
+    x = ~`Goods imports (BoP, current US$)`,
+    y = ~`Goods exports (BoP, current US$)`,
+    color = ~`Country Name`,
+    frame = ~Date,
+    type = "scatter",
+    mode = "markers"
+  ) %>% layout(title = "Wykres wartości importu dóbr od eksportu w czasie")
+
+WDI_UE_ALL %>%
+  plot_ly(
+    x = ~`Services, value added (% of GDP)`,
+    y = ~`Ease of doing business score (0 = lowest, 100 = best)`,
+    color = ~`Country Name`,
+    frame = ~Date,
+    type = "scatter",
+    mode = "markers"
+  ) %>% layout(title = "Wykres wartości dodanej z sektora usługowego (% PKB) od wskaźnika łatwości  prowadzenia działalności gospodarczej w czasie")
+
+WDI_UE_ALL %>%
+  plot_ly(
+    x = ~`Taxes on goods and services (% of revenue)`,
+    y = ~`GDP per capita (current US$)`,
+    color = ~`Country Name`,
+    frame = ~Date,
+    type = "scatter",
+    mode = "markers"
+  ) %>% layout(title = "Wykres podatku od dóbr i ułsug (% przychodu) od PKB per capita w czasie")
+
+WDI_UE_ALL %>%
+  plot_ly(
+    x = ~`Inflation, consumer prices (annual %)`,
+    y = ~`GDP per capita (current US$)`,
+    color = ~`Country Name`,
+    frame = ~Date,
+    type = "scatter",
+    mode = "markers"
+  ) %>% layout(title = "Wykres inflacji (roczny %) od PKB per capita w czasie")
+
 ```
+
+## Próba stworzenia regresora przewidującego ceny złota
+
+Do stworzenia modelu użyte zostaną atrybuty wybrane w powyższych punktach. Jakość predykcji będzie oceniana za pomocą trzech miar ocen: 
+
+- RMSE - błąd średniokwadratowy - pozwala ocenić jak bardzo predykcja odbiega od aktualnej wartości,
+- R^2 - współczynnik determinacji R-kwadrat - pozwala oszacować jakość dopasowania modelu do danych,
+- MNE - średni absolutny błąd procentowy - pozwala wraz z RSME stwierdzić dodatkowo czy wśród błędów występują takie o bardzo dużych wartości
+
+```{r reg_functions}
+get_best_result = function(caret_fit) {
+  best = which(rownames(caret_fit$results) == rownames(caret_fit$bestTune))
+  best_result = caret_fit$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+
+calc_rmse = function(actual, predicted) {
+  sqrt(mean((actual - predicted) ^ 2))
+}
+```
+
+```{r reggresion_setup}
+df <- WDI_UE_ALL %>% merge(GOLD, by ="Date") %>% rename(Gold = "Gold (USD)") %>% select(-(1:2)) %>% drop_na()
+
+idx <- createDataPartition(df$Gold, p=0.67, list=FALSE)
+
+train <- df[idx,]
+test <- df[-idx,]
+
+```
+### Linear Model
+```{r regression_lm}
+lm_mod <- train(
+  Gold ~ .,
+  data = train,
+  preProcess = c('scale', 'center'),
+  trControl = trainControl(method="cv",number=5),
+  method = "lm"
+)
+
+get_best_result(lm_mod)
+
+#plot(lm_mod)
+
+rmse <- calc_rmse(actual = test$Gold,
+          predicted = predict(lm_mod, test))
+```
+
+Błąd średniokwadratowy predykcji dla modelu wyniósł `r rmse`.
+
+### Ridge Regression
+```{r regression_rdg}
+lambdaGrid <- expand.grid(lambda = 10^seq(10, -2, length=100))
+
+rdg_mod <- train(
+  Gold ~ .,
+  data = train,
+  trControl = trainControl(method="cv",number=5),
+  method = "ridge",
+  preProcess = c('scale', 'center'),
+  tuneGrid = lambdaGrid
+)
+
+get_best_result(rdg_mod)
+
+plot(rdg_mod)
+
+rmse <- calc_rmse(actual = test$Gold,
+          predicted = predict(rdg_mod, test))
+```
+
+Błąd średniokwadratowy predykcji dla modelu wyniósł `r rmse`.
+
+### k-Nearest Neighbours
+```{r regression_knn, warnings = FALSE}
+knn_mod = train(
+  Gold ~ .,
+  data = train,
+  method = "knn",
+  preProcess = c('scale', 'center'),
+  trControl = trainControl(method="cv",number=5),
+  tuneGrid = expand.grid(k = seq(1, 61, by = 2)))
+
+get_best_result(knn_mod)
+
+plot(knn_mod)
+
+rmse <- calc_rmse(actual = test$Gold,
+          predicted = predict(knn_mod, test))
+```
+
+Błąd średniokwadratowy predykcji dla modelu wyniósł `r rmse`.
+
+### Stochastic Gradient Boosting
+```{r regression_gbm, warnings = FALSE}
+
+gbm_mod = train(
+  Gold ~.,
+  data = train,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "gbm",
+  preProcess = c('scale', 'center'),
+  verbose = FALSE
+)
+
+plot(gbm_mod)
+
+get_best_result(gbm_mod)
+
+rmse <- calc_rmse(actual = test$Gold,
+         predicted = predict(gbm_mod, test))
+```
+
+Błąd średniokwadratowy predykcji dla modelu wyniósł `r rmse`.
+
+### Bayesian Regularized Neural Networks
+```{r regression_brnn, include=FALSE}
+brnnGrid <- expand.grid(neurons = seq(1, 5, by = 1))
+
+brnn_mod = train(
+  Gold ~.,
+  data = train,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "brnn",
+  tuneGrid = brnnGrid,
+  preProcess = c('scale', 'center'),
+  verbose = FALSE
+)
+```
+
+```{r regression_brnn_res}
+plot(brnn_mod)
+
+get_best_result(brnn_mod)
+
+rmse <- calc_rmse(actual = test$Gold,
+         predicted = predict(brnn_mod, test))
+```
+
+Błąd średniokwadratowy predykcji dla modelu wyniósł `r rmse`.
+
+Testowane modele są zbliżone pod względem takich miar jak błąd średniokwadratowy czy R^2. Minimalnie lepszy zdaje się być model Bayesian Regularized Neural Networks.
+
+## Analiza ważności atrybutów dla najlepszego znalezionego modelu
+### Bayesian Regularized Neural Networks
+```{r brnn_importance, fig.width=9}
+ggplot(varImp(brnn_mod))
+```
+
+Analizując powyższe ważności atrybutów można szybko zauważyć, że najistotniejszym atrybutem jest inflacja. Podatek od dóbr i usług nie ma w ogóle wpływu na tworzenie modelu. Natomiast pozostałe atrybuty mają od 5 do 10 razy mniejszy wpływ na wynik regresji.    
+
+
+
+
+
